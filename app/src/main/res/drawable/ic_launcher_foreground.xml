@@ -1,0 +1,30 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- A clear clock face for time, with a warm check mark for intentional use. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,31 A23,23 0,1 1,53.99 31"
+        android:strokeColor="#FFF8EA"
+        android:strokeLineCap="round"
+        android:strokeWidth="5" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,39 L54,53 L64,58"
+        android:strokeColor="#FFF8EA"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="5" />
+    <path
+        android:fillColor="#E8B66A"
+        android:pathData="M54,50 A4,4 0,1 1,53.99 50" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M64,70 L71,77 L84,62"
+        android:strokeColor="#F2B968"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6" />
+</vector>

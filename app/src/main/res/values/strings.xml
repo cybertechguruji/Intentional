@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Intentional</string>
+    <string name="accessibility_description">Checks when a selected app opens so you can choose a purpose and time limit.</string>
+</resources>
