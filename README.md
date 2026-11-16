@@ -17,3 +17,9 @@ The app explains Accessibility access before opening Android Settings. The servi
 Open in Android Studio and let it sync the Gradle project, then run the `app` configuration on a phone or emulator.
 
 To share an installable APK, choose **Build > Build APK(s)**. The APK appears at `app/build/outputs/apk/debug/app-debug.apk`. If Android says the app is not installed while an older Intentional build is already on the phone, uninstall the older build first; builds signed with different local debug keys cannot replace one another. Then install the newly built APK.
+
+## Download and install
+
+[Download the latest APK](https://github.com/cybertechguruji/Intentional/releases/latest)
+
+After downloading, tap the APK file on your phone and follow Android’s prompts to install it.
