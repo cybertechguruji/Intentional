@@ -1,15 +1,32 @@
 package com.akram.intentional
 
-import android.accessibilityservice.AccessibilityService
+import android.app.AppOpsManager
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.app.usage.UsageEvents
+import android.app.usage.UsageStatsManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
+import android.os.IBinder
 import android.os.Looper
-import android.text.InputType
+import android.provider.Settings
 import android.text.Editable
+import android.text.InputType
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
@@ -20,34 +37,206 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.view.accessibility.AccessibilityEvent
+import androidx.core.app.NotificationCompat
 
-class AppWatchService : AccessibilityService() {
-    private val handler = Handler(Looper.getMainLooper())
-    private var foregroundPackage: String? = null
+class AppWatchService : Service() {
+
+    companion object {
+        const val CHANNEL_ID = "intentional_session_monitor"
+        const val NOTIFICATION_ID = 1001
+        private const val POLL_INTERVAL_MS = 350L
+
+        fun hasUsageAccess(context: Context): Boolean {
+            val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as? AppOpsManager ?: return false
+            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    android.os.Process.myUid(),
+                    context.packageName
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    android.os.Process.myUid(),
+                    context.packageName
+                )
+            }
+            return mode == AppOpsManager.MODE_ALLOWED
+        }
+
+        fun hasOverlayPermission(context: Context): Boolean {
+            return Settings.canDrawOverlays(context)
+        }
+
+        fun hasPermissions(context: Context): Boolean {
+            return hasUsageAccess(context) && hasOverlayPermission(context)
+        }
+
+        fun start(context: Context) {
+            val intent = Intent(context, AppWatchService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, AppWatchService::class.java))
+        }
+    }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var workerThread: HandlerThread? = null
+    private var workerHandler: Handler? = null
+
+    private var lastForegroundPackage: String? = null
     private var expiryTask: Runnable? = null
     private var warningTask: Runnable? = null
     private var warningOverlay: View? = null
     private var promptOverlay: View? = null
+    private var isScreenOn = true
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    isScreenOn = false
+                    stopPolling()
+                }
+                Intent.ACTION_SCREEN_ON -> {
+                    isScreenOn = true
+                    startPolling()
+                }
+            }
+        }
+    }
+
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            if (!isScreenOn) return
+            checkForegroundPackage()
+            workerHandler?.postDelayed(this, POLL_INTERVAL_MS)
+        }
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+        startAsForeground()
+
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        registerReceiver(screenReceiver, filter)
+
+        val thread = HandlerThread("IntentionalAppWatcher").apply { start() }
+        workerThread = thread
+        workerHandler = Handler(thread.looper)
+
+        startPolling()
         scheduleExpiry()
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        startAsForeground()
+        return START_STICKY
+    }
+
+    private fun startPolling() {
+        workerHandler?.removeCallbacks(pollRunnable)
+        workerHandler?.post(pollRunnable)
+    }
+
+    private fun stopPolling() {
+        workerHandler?.removeCallbacks(pollRunnable)
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Intentional Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Monitors intentional app sessions"
+                setShowBadge(false)
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun startAsForeground() {
+        val launchIntent = Intent(this, MainActivity::class.java)
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Intentional")
+            .setContentText("Monitoring intentional app sessions")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun checkForegroundPackage() {
+        val currentPackage = detectForegroundPackage() ?: return
+        if (currentPackage == lastForegroundPackage) return
+        lastForegroundPackage = currentPackage
+
+        mainHandler.post {
+            onPackageChanged(currentPackage)
+        }
+    }
+
+    private fun detectForegroundPackage(): String? {
+        val usm = getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return null
+        val now = System.currentTimeMillis()
+        val events = runCatching { usm.queryEvents(now - 10_000L, now) }.getOrNull()
+        var lastResumed: String? = null
+        if (events != null) {
+            val event = UsageEvents.Event()
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                if (event.eventType == UsageEvents.Event.ACTIVITY_RESUMED) {
+                    lastResumed = event.packageName
+                }
+            }
+        }
+        if (lastResumed != null) return lastResumed
+
+        val stats = runCatching {
+            usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 60_000L, now)
+        }.getOrNull()
+        return stats?.maxByOrNull { it.lastTimeUsed }?.packageName
+    }
+
+    private fun onPackageChanged(packageName: String) {
         if (promptOverlay != null) return
-        val packageName = event?.packageName?.toString() ?: return
-        foregroundPackage = packageName
         val dismissedPackage = SessionStore.dismissedPackage(this)
         if (dismissedPackage != null) {
             if (packageName == dismissedPackage || packageName == this.packageName) return
-            // Ignore system surfaces such as the notification shade; wait until another
-            // real app (including the Home launcher) is in front before clearing this.
             val homePackage = runCatching {
                 packageManager.resolveActivity(
                     Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME),
-                    android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+                    PackageManager.MATCH_DEFAULT_ONLY
                 )?.activityInfo?.packageName
             }.getOrNull()
             if (packageName != homePackage && packageManager.getLaunchIntentForPackage(packageName) == null) return
@@ -71,31 +260,32 @@ class AppWatchService : AccessibilityService() {
     }
 
     private fun scheduleExpiry() {
-        expiryTask?.let(handler::removeCallbacks)
-        warningTask?.let(handler::removeCallbacks)
+        expiryTask?.let(mainHandler::removeCallbacks)
+        warningTask?.let(mainHandler::removeCallbacks)
         removeWarning()
         val deadline = SessionStore.deadline(this)
         val activePackage = SessionStore.activePackage(this)
         if (deadline <= 0L || activePackage == null) return
         val warning = Runnable {
-            if (SessionStore.deadline(this) == deadline && foregroundPackage == activePackage) showTimeWarning()
+            if (SessionStore.deadline(this) == deadline && lastForegroundPackage == activePackage) showTimeWarning()
         }
         warningTask = warning
         val warningDelay = deadline - System.currentTimeMillis() - 60_000L
-        if (warningDelay > 0L) handler.postDelayed(warning, warningDelay)
+        if (warningDelay > 0L) mainHandler.postDelayed(warning, warningDelay)
         val task = Runnable {
             if (SessionStore.deadline(this) != deadline) return@Runnable
-            warningTask?.let(handler::removeCallbacks)
+            warningTask?.let(mainHandler::removeCallbacks)
             removeWarning()
             SessionStore.finish(this)
-            if (foregroundPackage == activePackage) showExpiryPrompt(activePackage)
+            if (lastForegroundPackage == activePackage) showExpiryPrompt(activePackage)
         }
         expiryTask = task
-        handler.postDelayed(task, (deadline - System.currentTimeMillis()).coerceAtLeast(0L))
+        mainHandler.postDelayed(task, (deadline - System.currentTimeMillis()).coerceAtLeast(0L))
     }
 
     private fun showTimeWarning() {
         if (warningOverlay != null || promptOverlay != null) return
+        if (!Settings.canDrawOverlays(this)) return
         val dark = SessionStore.isDark(this)
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val density = resources.displayMetrics.density
@@ -114,12 +304,12 @@ class AppWatchService : AccessibilityService() {
         }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(42) }
         runCatching { wm.addView(banner, params); warningOverlay = banner }.onFailure { return }
-        handler.postDelayed({ if (warningOverlay === banner) removeWarning() }, 6_000L)
+        mainHandler.postDelayed({ if (warningOverlay === banner) removeWarning() }, 6_000L)
     }
 
     private fun removeWarning() {
@@ -130,7 +320,6 @@ class AppWatchService : AccessibilityService() {
 
     private fun showExpiryPrompt(targetPackage: String) {
         if (promptOverlay != null) return
-        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val density = resources.displayMetrics.density
         val dark = SessionStore.isDark(this)
         val ink = if (dark) Color.rgb(242, 244, 242) else Color.rgb(37, 42, 50)
@@ -182,7 +371,7 @@ class AppWatchService : AccessibilityService() {
             SessionStore.clearCompletedSession(this)
             SessionStore.dismissUntilLeave(this, targetPackage)
             removePrompt()
-            performGlobalAction(GLOBAL_ACTION_HOME)
+            performHome()
         }
         card.addView(closeButton, verticalParams(bottom = 10, dp = ::dp))
 
@@ -240,21 +429,7 @@ class AppWatchService : AccessibilityService() {
                 .showSoftInput(customInput, InputMethodManager.SHOW_IMPLICIT)
         }
 
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-        }
-        promptOverlay = scrim
-        runCatching { windowManager.addView(scrim, params) }.onFailure {
-            promptOverlay = null
-            showGateFallback(targetPackage, true)
-        }
+        attachPrompt(scrim, targetPackage, completed = true)
     }
 
     private fun showStartPrompt(targetPackage: String) {
@@ -262,7 +437,6 @@ class AppWatchService : AccessibilityService() {
         val appName = runCatching {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(targetPackage, 0)).toString()
         }.getOrDefault("this app")
-        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val density = resources.displayMetrics.density
         fun dp(value: Int) = (value * density).toInt()
 
@@ -460,7 +634,7 @@ class AppWatchService : AccessibilityService() {
             setOnClickListener {
                 SessionStore.dismissUntilLeave(this@AppWatchService, targetPackage)
                 removePrompt()
-                performGlobalAction(GLOBAL_ACTION_HOME)
+                performHome()
             }
         }
         card.addView(notNow)
@@ -476,10 +650,14 @@ class AppWatchService : AccessibilityService() {
     }
 
     private fun attachPrompt(root: View, targetPackage: String, completed: Boolean) {
+        if (!Settings.canDrawOverlays(this)) {
+            showGateFallback(targetPackage, completed)
+            return
+        }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
@@ -499,6 +677,14 @@ class AppWatchService : AccessibilityService() {
         promptOverlay = null
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         runCatching { windowManager.removeView(view) }
+    }
+
+    private fun performHome() {
+        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_HOME)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        startActivity(homeIntent)
     }
 
     private fun showGateFallback(targetPackage: String, completed: Boolean) {
@@ -529,11 +715,15 @@ class AppWatchService : AccessibilityService() {
             stateListAnimator = null
         }
 
-    override fun onInterrupt() = Unit
-
     override fun onDestroy() {
-        expiryTask?.let(handler::removeCallbacks)
-        warningTask?.let(handler::removeCallbacks)
+        stopPolling()
+        runCatching { unregisterReceiver(screenReceiver) }
+        workerThread?.quitSafely()
+        workerThread = null
+        workerHandler = null
+
+        expiryTask?.let(mainHandler::removeCallbacks)
+        warningTask?.let(mainHandler::removeCallbacks)
         removeWarning()
         removePrompt()
         super.onDestroy()

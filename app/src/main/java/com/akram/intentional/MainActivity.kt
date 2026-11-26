@@ -1,16 +1,17 @@
 package com.akram.intentional
 
-import android.accessibilityservice.AccessibilityServiceInfo
-import android.content.pm.ApplicationInfo
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
-import android.view.accessibility.AccessibilityManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,20 +21,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import java.util.Locale
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
+import java.util.Locale
 
 private data class AppPalette(val ink: Color, val muted: Color, val mint: Color, val warm: Color, val canvas: Color, val surface: Color, val soft: Color, val track: Color)
 private val LightPalette = AppPalette(Color(0xFF252A32), Color(0xFF707984), Color(0xFF1C7668), Color(0xFFB66A40), Color(0xFFF5F7F5), Color.White, Color(0xFFE6F2EE), Color(0xFFE5EAE7))
@@ -49,7 +48,7 @@ private val SoftColor: Color @Composable get() = LocalPalette.current.soft
 private val TrackColor: Color @Composable get() = LocalPalette.current.track
 
 class MainActivity : ComponentActivity() {
-    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent { IntentionalApp() }
     }
@@ -76,8 +75,13 @@ private fun IntentionalApp() {
     val darkTheme = when (themeMode) { "dark" -> true; "light" -> false; else -> isSystemInDarkTheme() }
     val palette = if (darkTheme) DarkPalette else LightPalette
     val openPermissionSettings = { explainPermission = true }
+
     LifecycleResumeEffect(Unit) {
-        serviceEnabled = isWatcherEnabled(context)
+        val enabled = isWatcherEnabled(context)
+        serviceEnabled = enabled
+        if (enabled) {
+            AppWatchService.start(context)
+        }
         refresh++
         onPauseOrDispose { }
     }
@@ -112,17 +116,94 @@ private fun IntentionalApp() {
                 }
             }
             if (explainPermission) {
+                val hasUsage = AppWatchService.hasUsageAccess(context)
+                val hasOverlay = AppWatchService.hasOverlayPermission(context)
                 AlertDialog(
                     onDismissRequest = { explainPermission = false },
                     title = { Text("Turn on app check-ins") },
-                    text = { Text("Android will ask you to enable Intentional’s accessibility service. It notices when an app you selected opens, so it can show this check-in and return you Home when your time is up. It does not read messages or what you do on screen. Your session times stay on this phone. You can switch this off later in Android Settings.") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(
+                                "Intentional needs two standard Android permissions to notice when you open selected apps and show the session timer over them. These do not read messages and do not interfere with banking apps like GPay.",
+                                color = Muted,
+                                fontSize = 14.sp
+                            )
+
+                            // Step 1: Usage Access
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = if (hasUsage) SoftColor else SurfaceColor)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("1. Usage access", fontWeight = FontWeight.SemiBold, color = Ink)
+                                        Text(
+                                            if (hasUsage) "Granted" else "Notices when selected apps open",
+                                            fontSize = 12.sp,
+                                            color = if (hasUsage) Mint else Muted
+                                        )
+                                    }
+                                    if (!hasUsage) {
+                                        Button(onClick = {
+                                            context.startActivity(
+                                                Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
+                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            )
+                                        }) { Text("Enable") }
+                                    } else {
+                                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Mint)
+                                    }
+                                }
+                            }
+
+                            // Step 2: Display over other apps
+                            Card(
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = if (hasOverlay) SoftColor else SurfaceColor)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text("2. Display over other apps", fontWeight = FontWeight.SemiBold, color = Ink)
+                                        Text(
+                                            if (hasOverlay) "Granted" else "Shows check-in screen over apps",
+                                            fontSize = 12.sp,
+                                            color = if (hasOverlay) Mint else Muted
+                                        )
+                                    }
+                                    if (!hasOverlay) {
+                                        Button(onClick = {
+                                            val overlayIntent = Intent(
+                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            context.startActivity(overlayIntent)
+                                        }) { Text("Enable") }
+                                    } else {
+                                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = Mint)
+                                    }
+                                }
+                            }
+                        }
+                    },
                     confirmButton = {
                         TextButton(onClick = {
                             explainPermission = false
-                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                        }) { Text("Continue to Settings") }
-                    },
-                    dismissButton = { TextButton(onClick = { explainPermission = false }) { Text("Not now") } }
+                            if (isWatcherEnabled(context)) {
+                                AppWatchService.start(context)
+                                serviceEnabled = true
+                            }
+                        }) {
+                            Text(if (hasUsage && hasOverlay) "Done" else "Close")
+                        }
+                    }
                 )
             }
         }
@@ -234,14 +315,20 @@ private fun AppsScreen(modifier: Modifier, refresh: Int, onChanged: () -> Unit) 
     val context = LocalContext.current
     val apps = remember(refresh) {
         val pm = context.packageManager
-        @Suppress("DEPRECATION")
-        pm.getInstalledApplications(0)
-            .filter { pm.getLaunchIntentForPackage(it.packageName) != null && it.packageName != context.packageName }
-            .map { info ->
-                val socialCategory = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && info.category == ApplicationInfo.CATEGORY_SOCIAL
-                UserApp(pm.getApplicationLabel(info).toString(), info.packageName, info.packageName in KnownSocialPackages || socialCategory)
-            }
-            .sortedBy { it.label.lowercase(Locale.getDefault()) }
+        val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+        }
+        val resolveList = pm.queryIntentActivities(launcherIntent, 0)
+        resolveList.mapNotNull { resolveInfo ->
+            val appInfo = resolveInfo.activityInfo.applicationInfo
+            val pkg = appInfo.packageName
+            if (pkg == context.packageName) return@mapNotNull null
+            val label = resolveInfo.loadLabel(pm).toString()
+            val socialCategory = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && appInfo.category == ApplicationInfo.CATEGORY_SOCIAL
+            UserApp(label, pkg, pkg in KnownSocialPackages || socialCategory)
+        }
+        .distinctBy { it.packageName }
+        .sortedBy { it.label.lowercase(Locale.getDefault()) }
     }
     val watched = remember(refresh) { SessionStore.watched(context) }
     val enabledApps = apps.filter { it.packageName in watched }
@@ -298,9 +385,18 @@ private fun AppToggleRow(app: UserApp, checked: Boolean, onToggle: () -> Unit) {
         Row(Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(horizontal = 16.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(app.label, fontWeight = FontWeight.Medium, color = Ink)
-                Text(if (checked) "Check-in is on" else "Check-in is off", fontSize = 12.sp, color = Muted)
+                Text(app.packageName, color = Muted, fontSize = 12.sp)
             }
-            Switch(checked = checked, onCheckedChange = { onToggle() })
+            Switch(
+                checked = checked,
+                onCheckedChange = { onToggle() },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = Mint,
+                    uncheckedThumbColor = Muted,
+                    uncheckedTrackColor = SurfaceColor
+                )
+            )
         }
     }
 }
@@ -314,8 +410,8 @@ private fun SettingsScreen(modifier: Modifier, serviceEnabled: Boolean, themeMod
             Card(shape = RoundedCornerShape(22.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("App check-ins", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
-                    Text(if (serviceEnabled) "Enabled. Selected apps will ask for a purpose and time." else "Android needs your permission to notice when a selected app opens.", color = Muted)
-                    OutlinedButton(onClick = onPermission) { Text(if (serviceEnabled) "Review permission" else "Open permission settings") }
+                    Text(if (serviceEnabled) "Enabled. Selected apps will ask for a purpose and time." else "Android needs standard permissions to notice when a selected app opens.", color = Muted)
+                    OutlinedButton(onClick = onPermission) { Text(if (serviceEnabled) "Review permissions" else "Open permission settings") }
                 }
             }
         }
@@ -339,11 +435,7 @@ private fun SettingsScreen(modifier: Modifier, serviceEnabled: Boolean, themeMod
     }
 }
 
-private fun isWatcherEnabled(context: Context): Boolean {
-    val manager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-    return manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-        .any { it.resolveInfo.serviceInfo.packageName == context.packageName && it.resolveInfo.serviceInfo.name.endsWith("AppWatchService") }
-}
+private fun isWatcherEnabled(context: Context): Boolean = AppWatchService.hasPermissions(context)
 
 private fun formatTime(ms: Long): String {
     val minutes = ms / 60_000

@@ -16,6 +16,13 @@ android {
         versionName = "0.6.0"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            enableV1Signing = true
+            enableV2Signing = true
+        }
+    }
+
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -29,6 +36,7 @@ dependencies {
     // on Compose 1.11 while its Android Gradle Plugin is 8.13 and compileSdk is 36.
     val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
     implementation(composeBom)
+    implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.12.2")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
